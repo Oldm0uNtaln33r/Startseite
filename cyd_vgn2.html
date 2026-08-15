@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Abfahrten Appelstr.</title>
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    background: #000000;
+    color: #f5f5f5;
+    font-family: "Helvetica Neue", Arial, sans-serif;
+    overflow: hidden;
+  }
+  #header {
+    display: -webkit-box;
+    display: box;
+    -webkit-box-orient: horizontal;
+    box-orient: horizontal;
+    padding: 14px 20px;
+    border-bottom: 2px solid #444;
+    background: #111;
+  }
+  #header table { width: 100%; border-collapse: collapse; }
+  #stopname {
+    font-size: 28px;
+    font-weight: bold;
+    color: #ffcc00;
+  }
+  #clock {
+    font-size: 28px;
+    font-weight: bold;
+    text-align: right;
+    color: #ffcc00;
+  }
+  #board {
+    width: 100%;
+    border-collapse: collapse;
+  }
+  #board td {
+    padding: 10px 20px;
+    font-size: 26px;
+    border-bottom: 1px solid #292929;
+    white-space: nowrap;
+  }
+  .line {
+    width: 70px;
+    font-weight: bold;
+    color: #000;
+    background: #ffcc00;
+    border-radius: 6px;
+    text-align: center;
+    padding: 4px 8px !important;
+    font-size: 22px;
+  }
+  .dir {
+    width: 45%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .clocktime {
+    text-align: right;
+    color: #cfcfcf;
+    font-size: 22px;
+  }
+  .delaytext {
+    color: #ff7c7c;
+    font-size: 16px;
+    font-weight: bold;
+    margin-left: 6px;
+  }
+  .time {
+    text-align: right;
+    color: #7cffb2;
+    font-weight: bold;
+  }
+  .time.delay {
+    color: #ff7c7c;
+  }
+  .time.due {
+    color: #ffcc00;
+  }
+  #ticker {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    width: 100%;
+    background: #111;
+    color: #aaa;
+    font-size: 18px;
+    padding: 8px 0;
+    border-top: 2px solid #444;
+    white-space: nowrap;
+    overflow: hidden;
+  }
+  #tickerInner {
+    display: inline-block;
+    padding-left: 100%;
+  }
+  #status {
+    padding: 30px 20px;
+    font-size: 22px;
+    color: #ff7c7c;
+  }
+</style>
+</head>
+<body>
+
+<div id="header">
+  <table>
+    <tr>
+      <td id="stopname">Appelstr. (Nürnberg)</td>
+      <td id="clock">--:--</td>
+    </tr>
+  </table>
+</div>
+
+<table id="board"></table>
+<div id="status"></div>
+
+<div id="ticker"><div id="tickerInner">&nbsp;</div></div>
+
+<script>
+  // ---- Konfiguration ----
+  var VGN_ID = 1852; // Appelstr. (Nürnberg)
+  var API_URL = "https://start.vag.de/dm/api/abfahrten.json/vgn/" + VGN_ID;
+  // Falls die direkte Anfrage wegen CORS/"null origin" (file:// bzw. Kiosk-App)
+  // fehlschlaegt, wird automatisch ueber einen oeffentlichen CORS-Proxy erneut versucht.
+  var PROXY_URL = "https://corsproxy.io/?url=" + encodeURIComponent(API_URL);
+  var REFRESH_MS = 20000;     // Abfahrten alle 20s aktualisieren
+  var RELOAD_MS = 3 * 60 * 60 * 1000; // ganze Seite alle 3h neu laden (gegen Speicherlecks)
+  var MAX_ROWS = 10;
+
+  var usedProxy = false;
+
+  function pad(n) { return (n < 10 ? "0" : "") + n; }
+
+  function updateClock() {
+    var now = new Date();
+    document.getElementById("clock").innerHTML = pad(now.getHours()) + ":" + pad(now.getMinutes());
+  }
+
+  function minutesUntil(iso) {
+    var t = new Date(iso).getTime();
+    var diff = Math.round((t - Date.now()) / 60000);
+    if (diff < 0) diff = 0;
+    return diff;
+  }
+
+  function renderStatus(msg) {
+    document.getElementById("status").innerHTML = msg;
+  }
+
+  function renderBoard(data) {
+    renderStatus("");
+    var rows = data.Abfahrten || [];
+    rows.sort(function(a, b) {
+      return new Date(a.AbfahrtszeitIst).getTime() - new Date(b.AbfahrtszeitIst).getTime();
+    });
+    rows = rows.slice(0, MAX_ROWS);
+
+    var html = "";
+    for (var i = 0; i < rows.length; i++) {
+      var r = rows[i];
+      var mins = minutesUntil(r.AbfahrtszeitIst);
+      var soll = new Date(r.AbfahrtszeitSoll).getTime();
+      var ist = new Date(r.AbfahrtszeitIst).getTime();
+      var istDate = new Date(r.AbfahrtszeitIst);
+      var delayMin = Math.round((ist - soll) / 60000);
+      var delayed = delayMin > 0; // > 0 Min Verspaetung
+
+      var clockText = pad(istDate.getHours()) + ":" + pad(istDate.getMinutes());
+      var delayHtml = delayed ? "<span class='delaytext'>+" + delayMin + " Min</span>" : "";
+
+      var timeClass = "time";
+      var timeText;
+      if (mins <= 0) {
+        timeText = "sofort";
+        timeClass += " due";
+      } else {
+        timeText = mins + " Min";
+        if (delayed) timeClass += " delay";
+      }
+
+      html += "<tr>";
+      html += "<td class='line'>" + r.Linienname + "</td>";
+      html += "<td class='dir'>" + r.Richtungstext + "</td>";
+      html += "<td class='clocktime'>" + clockText + delayHtml + "</td>";
+      html += "<td class='" + timeClass + "'>" + timeText + "</td>";
+      html += "</tr>";
+    }
+
+    if (rows.length === 0) {
+      html = "<tr><td colspan='4' style='padding:20px;font-size:22px;color:#999;'>Keine Abfahrten in den naechsten Minuten.</td></tr>";
+    }
+
+    document.getElementById("board").innerHTML = html;
+
+    // Ticker mit Sonderinformationen
+    var info = data.Sonderinformationen || [];
+    var tickerEl = document.getElementById("tickerInner");
+    if (info.length > 0) {
+      tickerEl.innerHTML = info.join("&nbsp;&nbsp;&nbsp;|&nbsp;&nbsp;&nbsp;");
+    } else {
+      tickerEl.innerHTML = "&nbsp;";
+    }
+  }
+
+  function fetchData() {
+    var url = usedProxy ? PROXY_URL : API_URL;
+    var xhr = new XMLHttpRequest();
+    xhr.open("GET", url, true);
+    xhr.timeout = 10000;
+    xhr.onreadystatechange = function() {
+      if (xhr.readyState === 4) {
+        if (xhr.status === 200 && xhr.responseText) {
+          try {
+            var data = JSON.parse(xhr.responseText);
+            renderBoard(data);
+          } catch (e) {
+            handleError("Antwort konnte nicht gelesen werden.");
+          }
+        } else {
+          handleError("Fehler beim Laden (Status " + xhr.status + ").");
+        }
+      }
+    };
+    xhr.onerror = function() {
+      handleError("Netzwerkfehler beim Laden.");
+    };
+    xhr.send();
+  }
+
+  function handleError(msg) {
+    if (!usedProxy) {
+      // Erster Versuch (direkt) fehlgeschlagen -> automatisch Proxy versuchen
+      usedProxy = true;
+      renderStatus("Direktzugriff fehlgeschlagen, versuche Proxy ...");
+      fetchData();
+    } else {
+      renderStatus(
+        msg + "<br><br>Hinweis: Diese Seite muss ueber http(s):// (z.B. GitHub Pages) " +
+        "aufgerufen werden, nicht als lokale Datei (file://), da die VGN-API sonst " +
+        "wegen CORS/\"null origin\" blockiert wird."
+      );
+    }
+  }
+
+  updateClock();
+  setInterval(updateClock, 1000);
+  fetchData();
+  setInterval(fetchData, REFRESH_MS);
+  setTimeout(function() { location.reload(); }, RELOAD_MS);
+</script>
+
+</body>
+</html>
